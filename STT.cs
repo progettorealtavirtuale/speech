@@ -1,127 +1,170 @@
 using UnityEngine;
 using UnityEngine.Networking;
 using TMPro;
-using UnityEngine.UI;
 using System.Collections;
 
 public class SpeechRecognitionTest : MonoBehaviour
 {
-    [SerializeField] private Button startButton;
-    [SerializeField] private Button stopButton;
     [SerializeField] private TextMeshProUGUI text;
-    [SerializeField] private LLM_Groq llmGroq;  // Riferimento allo script LLM_Groq
-    [SerializeField] private TTS_SF_Simba ttsSFSimba;  // Riferimento allo script TTS_SF_Simba
+    [SerializeField] private LLM_Groq llmGroq;
+    [SerializeField] private TTS_SF_Simba ttsSFSimba;
 
     private AudioClip clip;
     private byte[] bytes;
     private bool recording;
 
-    // Questo è il metodo che viene chiamato quando il gioco inizia
-    private void Start()
-    {
-        startButton.onClick.AddListener(StartRecording);
-        stopButton.onClick.AddListener(StopRecording);
-        stopButton.interactable = false;
-    }
+    private float silenceTimer = 0f;
+    private float silenceThreshold = 0.01f;
+    private float silenceDurationToStop = 2f;
 
-    // Questo metodo viene chiamato ogni frame, per fermare la registrazione automaticamente dopo 10 secondi
+    private int clickCount = 0;  // Contatore 
+
     private void Update()
     {
-        if (recording && Microphone.GetPosition(null) >= clip.samples)
+        if (Input.GetMouseButtonDown(0)) // Ogni click del tasto sinistro
         {
-            StopRecording();
+            clickCount++; //variabile che tenga conto del numero di click
+
+            if (clickCount % 2 != 0) // Se il numero di clic è dispari, per far si che si stoppi/parte l'animazione
+            {
+                if (!recording)
+                {
+                    // Avvia la registrazione se non è già attiva
+                    StartRecording();
+                }
+            }
+        }
+
+        // Se è in corso la registrazione, gestisci la fine quando c'è silenzio
+        if (recording)
+        {
+            if (Microphone.GetPosition(null) >= clip.samples)
+            {
+                StopRecording();
+                return;
+            }
+
+            float volume = GetMicVolume();
+            if (volume < silenceThreshold)
+            {
+                silenceTimer += Time.deltaTime;
+                if (silenceTimer >= silenceDurationToStop)
+                {
+                    StopRecording();
+                }
+            }
+            else
+            {
+                silenceTimer = 0f;
+            }
         }
     }
 
-    // Inizia la registrazione dal microfono
     private void StartRecording()
     {
         text.color = Color.white;
-        text.text = "Recording...";
-        startButton.interactable = false;
-        stopButton.interactable = true;
-        clip = Microphone.Start(null, false, 10, 44100);  // Registra per 10 secondi con frequenza di 44100 Hz
+        text.text = "Talk to me...";
+        clip = Microphone.Start(null, false, 10, 44100);
         recording = true;
+        silenceTimer = 0f;
     }
 
-    // Ferma la registrazione e invia i dati
     private void StopRecording()
+{
+    int position = Microphone.GetPosition(null);
+
+    // Controllo di sicurezza
+    if (position <= 0 || clip == null)
     {
-        var position = Microphone.GetPosition(null);
-        Microphone.End(null);  // Ferma la registrazione
-        var samples = new float[position * clip.channels];
-        clip.GetData(samples, 0);  // Estrai i dati registrati
-        bytes = EncodeAsWAV(samples, clip.frequency, clip.channels);  // Codifica in formato WAV
+        Debug.LogWarning("Registrazione non valida o troppo breve.");
+        Microphone.End(null);
         recording = false;
-        SendRecording();  // Invia i dati
+        return;
     }
 
-    // Metodo per inviare i dati audio all'API
+    Microphone.End(null);
+
+    try
+    {
+        float[] samples = new float[position * clip.channels];
+        bool success = clip.GetData(samples, 0);
+
+        if (!success)
+        {
+            Debug.LogError("GetData fallito.");
+            return;
+        }
+
+        bytes = EncodeAsWAV(samples, clip.frequency, clip.channels);
+        recording = false;
+        SendRecording();
+    }
+    catch (System.Exception e)
+    {
+        Debug.LogError("Errore durante GetData: " + e.Message);
+    }
+}
+
+
+    private float GetMicVolume()
+    {
+        int micPosition = Microphone.GetPosition(null);
+        int start = Mathf.Max(0, micPosition - 128);
+        float[] samples = new float[128];
+        clip.GetData(samples, start);
+
+        float sum = 0f;
+        foreach (var sample in samples)
+        {
+            sum += Mathf.Abs(sample);
+        }
+        return sum / samples.Length;
+    }
+
     private void SendRecording()
     {
         text.color = Color.yellow;
-        text.text = "Sending...";
-        stopButton.interactable = false;
-
-        // Avvia la coroutine per inviare i dati audio
+        text.text = "Analizzo...";
         StartCoroutine(SendToAPI(bytes));
     }
 
-    // Coroutine che invia i dati audio a Hugging Face (o altro servizio API)
     private IEnumerator SendToAPI(byte[] audioBytes)
     {
-        string url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3-turbo";  // Cambia con l'URL del tuo modello
+        string url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3-turbo";
         UnityWebRequest request = new UnityWebRequest(url, "POST");
-
-        // Crea la richiesta con i dati audio
         request.uploadHandler = new UploadHandlerRaw(audioBytes);
         request.downloadHandler = new DownloadHandlerBuffer();
-        request.SetRequestHeader("Authorization", "Bearer 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");  // Sostituisci con la tua chiave API
+        request.SetRequestHeader("Authorization", "Bearer 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");
         request.SetRequestHeader("Content-Type", "audio/wav");
 
-        // Invia la richiesta e attendi la risposta
         yield return request.SendWebRequest();
 
         if (request.result == UnityWebRequest.Result.Success)
         {
             string responseText = request.downloadHandler.text;
-
-            // Estrai il testo dalla risposta (assumendo che la risposta sia un oggetto JSON con un campo "text")
             string transcribedText = ExtractTranscription(responseText);
             text.color = Color.white;
-            text.text = "Transcription: " + transcribedText;  // Mostra la trascrizione
+            text.text = "Hai detto: " + transcribedText;
 
-            // Invia il testo trascritto all'LLM per ricevere una risposta
-            // Verifica che llmGroq non sia nullo
             if (llmGroq != null)
-            {
-                // Invia il testo trascritto a LLM per la risposta
-                llmGroq.TextToLLM(transcribedText);  // Invia il testo trascritto a LLM per la risposta
-            }
+                llmGroq.TextToLLM(transcribedText);
             else
-            {
-                Debug.LogError("llmGroq is not assigned in the inspector.");
-            }
-            startButton.interactable = true;
+                Debug.LogError("llmGroq non assegnato.");
         }
         else
         {
             text.color = Color.red;
-            text.text = "Error: " + request.error;  // Mostra l'errore in caso di fallimento
-            startButton.interactable = true;
+            text.text = "Errore: " + request.error;
         }
     }
 
-    // Estrai il testo dalla risposta (assumendo che la risposta contenga il campo "text")
     private string ExtractTranscription(string response)
     {
-        // Assumendo che la risposta sia del tipo: {"text": "Stella"}
         int startIndex = response.IndexOf("\"text\":\"") + 8;
         int endIndex = response.IndexOf("\"", startIndex);
         return response.Substring(startIndex, endIndex - startIndex);
     }
 
-    // Codifica i dati audio in formato WAV
     private byte[] EncodeAsWAV(float[] samples, int frequency, int channels)
     {
         using (var memoryStream = new System.IO.MemoryStream(44 + samples.Length * 2))
@@ -132,23 +175,20 @@ public class SpeechRecognitionTest : MonoBehaviour
                 writer.Write(36 + samples.Length * 2);
                 writer.Write("WAVE".ToCharArray());
                 writer.Write("fmt ".ToCharArray());
-                writer.Write(16); // PCM format size
-                writer.Write((ushort)1);  // PCM format
+                writer.Write(16);
+                writer.Write((ushort)1);
                 writer.Write((ushort)channels);
                 writer.Write(frequency);
-                writer.Write(frequency * channels * 2);  // Byte rate
-                writer.Write((ushort)(channels * 2));  // Block align
-                writer.Write((ushort)16);  // Bits per sample (16-bit)
+                writer.Write(frequency * channels * 2);
+                writer.Write((ushort)(channels * 2));
+                writer.Write((ushort)16);
                 writer.Write("data".ToCharArray());
-                writer.Write(samples.Length * 2);  // Data chunk size
+                writer.Write(samples.Length * 2);
 
-                // Scrive i dati audio come valori a 16 bit
                 foreach (var sample in samples)
-                {
-                    writer.Write((short)(sample * short.MaxValue));  // Converte i dati audio a short
-                }
+                    writer.Write((short)(sample * short.MaxValue));
             }
-            return memoryStream.ToArray();  // Restituisce il byte array WAV
+            return memoryStream.ToArray();
         }
     }
 }

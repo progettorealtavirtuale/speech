@@ -1,35 +1,94 @@
+
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Networking;
 using System;
 
 public class TTS_SF_Simba : MonoBehaviour
 {
-    //Variables
-    [SerializeField]
-    private string SPEECHIFY_API_KEY;
+    [Header("ElevenLabs Settings")]
+    [SerializeField] private string elevenLabsAPIKey = "sk_3499e022aa394f8a795fff98b2f9e1a71ec047acde1b6f31";
+    [SerializeField] private string voiceID = "pwvkOXKI34DbjtR6yUk5"; // voce ID
 
-    private enum SelectVoice
+    private const string ELEVEN_TTS_BASE_URI = "https://api.elevenlabs.io/v1/text-to-speech/";
+
+    public void Say(string textInput)
     {
-        US_Henry, US_Carly, US_Kyle, US_Kristy, US_Oliver, US_Tasha, US_Joe, US_Lisa,
-        US_George, US_Emily, US_Rob, GB_Russell, GB_Benjamin, GB_Michael, AU_KIM, IN_Ankit, IN_Arun,
-        GB_Carol, GB_Helen, US_Julie, AU_Linda, US_Mark, US_Nick, NG_Elijah, GB_Beverly, GB_Collin,
-        US_Erin, US_Jack, US_Jesse, US_Keenan, US_Lindsey, US_Monica, GB_Phil, GB_Declan, US_Stacy,
-        GB_Archie, US_Evelyn, GB_Freddy, GB_Harper, US_Jacob, US_James, US_Mason, US_Victoria
+        StartCoroutine(PlayTTS(textInput));
     }
 
-    [SerializeField]
-    private SelectVoice selectVoice;
-
-    const string TTS_API_URI = "https://api.sws.speechify.com/v1/audio/stream";      //POST URI, streaming API
-    private string sfVoice;
-
-    // Start is called before the first frame update
-    void Start()
+    IEnumerator PlayTTS(string message)
     {
-        sfVoice = selectVoice.ToString().Substring(3);
-        Debug.Log("You have selected voice " + sfVoice);
+        string url = ELEVEN_TTS_BASE_URI + voiceID + "/stream";
+
+        // JSON payload
+        ElevenLabsTTSRequest payload = new ElevenLabsTTSRequest
+        {
+            text = message,
+            model_id = "eleven_multilingual_v1",
+            voice_settings = new VoiceSettings
+            {
+                stability = 0.5f,
+                similarity_boost = 0.5f
+            }
+        };
+
+        string jsonData = JsonUtility.ToJson(payload);
+        Debug.Log("Sending to ElevenLabs: " + jsonData);
+
+        UnityWebRequest request = new UnityWebRequest(url, "POST");
+        request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(jsonData));
+        request.downloadHandler = new DownloadHandlerAudioClip(url, AudioType.MPEG);
+
+        request.SetRequestHeader("xi-api-key", elevenLabsAPIKey);
+        request.SetRequestHeader("Content-Type", "application/json");
+        request.SetRequestHeader("Accept", "audio/mpeg");
+
+        yield return request.SendWebRequest();
+
+        if (request.result == UnityWebRequest.Result.Success)
+        {
+            AudioClip clip = DownloadHandlerAudioClip.GetContent(request);
+            GetComponent<AudioSource>().PlayOneShot(clip);
+        }
+        else
+        {
+            Debug.Log("TTS API Request failed: " + request.error);
+            Debug.Log("Response Code: " + request.responseCode);
+        }
+    }
+
+    [Serializable]
+    public class ElevenLabsTTSRequest
+    {
+        public string text;
+        public string model_id;
+        public VoiceSettings voice_settings;
+    }
+
+    [Serializable]
+    public class VoiceSettings
+    {
+        public float stability;
+        public float similarity_boost;
+    }
+} 
+/*
+using System.Collections;
+using UnityEngine;
+using UnityEngine.Networking;
+public class TTS_SF_Simba : MonoBehaviour
+{
+    [Header("VoiceRSS Settings")]
+    [SerializeField] private string voiceRSSApiKey = "42bf7fae2faa4a68a63b9d0690403de6"; 
+    [SerializeField] private string language = "en-en"; 
+
+    private const string VOICERSS_URL = "https://api.voicerss.org/";
+    private AudioSource audioSource;
+
+    private void Awake()
+    {
+        audioSource = GetComponent<AudioSource>();
     }
 
     public void Say(string textInput)
@@ -37,48 +96,25 @@ public class TTS_SF_Simba : MonoBehaviour
         StartCoroutine(PlayTTS(textInput));
     }
 
-    IEnumerator PlayTTS(string mesg)
+    IEnumerator PlayTTS(string message)
     {
-        //JSON
-        TextToSpeechData ttsData = new TextToSpeechData();
-        ttsData.input = SimpleCleanText(mesg);
-        ttsData.voice_id = sfVoice;
-        string jsonPrompt = JsonUtility.ToJson(ttsData);
+        string url = $"{VOICERSS_URL}?key={voiceRSSApiKey}&hl={language}&src={UnityWebRequest.EscapeURL(message)}&c=MP3&f=44khz_16bit_stereo";
 
-        //WebRequest
-        UnityWebRequest request = new UnityWebRequest(TTS_API_URI, "POST");
-        request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(jsonPrompt));
-        request.downloadHandler = new DownloadHandlerAudioClip(TTS_API_URI, AudioType.MPEG);
-
-        //Headers
-        request.SetRequestHeader("content-type", "application/json");
-        request.SetRequestHeader("accept", "audio/mpeg");
-        request.SetRequestHeader("Authorization", SPEECHIFY_API_KEY);
-
-        yield return request.SendWebRequest();
-        if (request.result == UnityWebRequest.Result.Success)
+        using (UnityWebRequest www = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG))
         {
-            AudioClip clip = DownloadHandlerAudioClip.GetContent(request);
-            GetComponent<AudioSource>().PlayOneShot(clip);
-            StartCoroutine(WaitForTalkingFinished());
+            yield return www.SendWebRequest();
+
+            if (www.result == UnityWebRequest.Result.Success)
+            {
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(www);
+                audioSource.clip = clip;
+                audioSource.Play(); // <-- questo attiva il LipSync
+            }
+            else
+            {
+                Debug.LogError("TTS Request failed: " + www.error);
+            }
         }
-        else Debug.Log("TTS API Request failed: " + request.error);
-    }
-
-    IEnumerator WaitForTalkingFinished()
-    {
-        yield return new WaitForSeconds(1.5f); // Attendi prima di restituire
-    }
-
-    string SimpleCleanText(string inputText)
-    {
-        return inputText.Trim();
-    }
-
-    [Serializable]
-    public class TextToSpeechData
-    {
-        public string input;
-        public string voice_id;
     }
 }
+*/
